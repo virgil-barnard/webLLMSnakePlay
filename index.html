@@ -3,15 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Snake with LLM Cheerleader</title>
+  <title>Snake + LLM Cheerleader with TTS</title>
   <style>
     body,html{font-family:Arial,Helvetica,sans-serif;margin:0;padding:12px 20px;box-sizing:border-box;}
     .download-container{display:flex;gap:8px;margin-bottom:14px;}
     select,button{font-size:14px;}
-    .chat-box{height:160px;max-width:760px;border:2px solid #000;background:#f7f7f7;padding:6px;overflow-y:auto;white-space:pre-wrap;margin:12px 0;}
-    .msg{padding:6px 8px;border-radius:8px;margin:4px 0;max-width:75%;word-break:break-word;}
-    .assistant{background:#f1f0f0;color:#333;}
     #game{background:#111;border:2px solid #000;display:block;margin:auto;}
+    /* hidden scrolling log – toggle display for debugging */
+    #chat{display:none;}
   </style>
 </head>
 <body>
@@ -23,47 +22,122 @@
 
   <canvas id="game" width="400" height="400"></canvas>
   <div id="info">Length: 1 | High score: 1</div>
-  <div id="chat" class="chat-box"></div>
+  <div id="chat"></div>
 
 <script type="module">
 import * as webllm from "https://esm.run/@mlc-ai/web-llm";
 
-/* ── MODEL LOADING ── */
-const modelSel=document.getElementById("model");
-webllm.prebuiltAppConfig.model_list.forEach(m=>{const o=document.createElement("option");o.value=m.model_id;o.textContent=m.model_id;modelSel.appendChild(o);});
-const engine=new webllm.MLCEngine();engine.setInitProgressCallback(r=>document.getElementById("status").textContent=r.text);
-async function loadModel(){await engine.reload(modelSel.value,{temperature:0.5});console.log("model loaded");}
+/* ───────────────────────── 1. model ───────────────────────── */
+const sel=document.getElementById("model");
+webllm.prebuiltAppConfig.model_list.forEach(m=>{
+  const o=document.createElement("option");
+  o.value=m.model_id; o.textContent=m.model_id; sel.appendChild(o);
+});
+const engine=new webllm.MLCEngine();
+engine.setInitProgressCallback(r=>document.getElementById("status").textContent=r.text);
+async function loadModel(){await engine.reload(sel.value,{temperature:0.5});}
 
-/* ── GAME ── */
-const CELL=20,GRID=20,ctx=document.getElementById("game").getContext("2d");
-const DIRS={ArrowUp:"U",ArrowDown:"D",ArrowLeft:"L",ArrowRight:"R"};
+/* ───────────────────────── 2. game setup ───────────────────────── */
+const CELL=20,GRID=20;
+const ctx=document.getElementById("game").getContext("2d");
+const DIR_KEY={ArrowUp:"U",ArrowDown:"D",ArrowLeft:"L",ArrowRight:"R"};
 const VEC={U:[0,-1],D:[0,1],L:[-1,0],R:[1,0]};
-const savedHigh=Number(localStorage.getItem("snake_highscore"))||1;
-let snake=[],dir="R",food={x:0,y:0},over=false,len=1,high=savedHigh,loopId=null;
-function placeFood(){do{food={x:Math.random()*GRID|0,y:Math.random()*GRID|0};}while(snake.some(b=>b.x===food.x&&b.y===food.y));}
-function updateInfo(){document.getElementById("info").textContent=`Length: ${len} | High score: ${high}`;}
-function draw(){ctx.fillStyle="#111";ctx.fillRect(0,0,400,400);ctx.fillStyle="#e11d48";ctx.fillRect(food.x*CELL,food.y*CELL,CELL,CELL);ctx.fillStyle="#22c55e";snake.forEach(b=>ctx.fillRect(b.x*CELL,b.y*CELL,CELL,CELL));}
-function reset(){snake=[{x:10,y:10}];dir="R";over=false;len=1;placeFood();updateInfo();draw();if(loopId)clearInterval(loopId);loopId=setInterval(step,200);}
-function step(){if(over||!snake.length)return;const [dx,dy]=VEC[dir];const head={x:(snake[0].x+dx+GRID)%GRID,y:(snake[0].y+dy+GRID)%GRID};
-  if(snake.some(b=>b.x===head.x&&b.y===head.y)){over=true;pushMsg("assistant","Oops! You crashed 😢. Refresh to try again.");clearInterval(loopId);return;}
+
+let snake=[],dir="R",food={x:0,y:0},loopId=null,over=false;
+let len=1,high=Number(localStorage.getItem("snake_highscore"))||1;
+let bubbleText=null,bubbleTTL=0;
+
+function placeFood(){
+  do{ food={x:Math.random()*GRID|0,y:Math.random()*GRID|0}; }
+  while(snake.some(b=>b.x===food.x&&b.y===food.y));
+}
+function updateInfo(){
+  document.getElementById("info").textContent=`Length: ${len} | High score: ${high}`;
+}
+
+/* draw speech bubble with simple word‑wrap */
+function drawBubble(){
+  if(!bubbleText) return;
+  ctx.save(); ctx.font="12px sans-serif"; ctx.textBaseline="top";
+  const pad=4,maxW=160,lineH=16;
+  const words=bubbleText.split(/\s+/), lines=[]; let cur="";
+  words.forEach(w=>{const test=cur?cur+" "+w:w;
+    if(ctx.measureText(test).width>maxW){lines.push(cur);cur=w;}
+    else cur=test;});
+  if(cur) lines.push(cur);
+  const boxW=Math.max(...lines.map(l=>ctx.measureText(l).width))+pad*2;
+  const boxH=lines.length*lineH+pad*2;
+  let bx=snake[0].x*CELL-boxW/2, by=snake[0].y*CELL-boxH-6;
+  if(bx<2)bx=2; if(bx+boxW>398)bx=398-boxW;
+  if(by<2)by=2;
+  ctx.fillStyle="#fff"; ctx.fillRect(bx,by,boxW,boxH);
+  ctx.strokeStyle="#333"; ctx.strokeRect(bx,by,boxW,boxH);
+  ctx.fillStyle="#000";
+  lines.forEach((l,i)=>ctx.fillText(l,bx+pad,by+pad+i*lineH));
+  ctx.restore();
+}
+function draw(){
+  ctx.fillStyle="#111"; ctx.fillRect(0,0,400,400);
+  ctx.fillStyle="#e11d48"; ctx.fillRect(food.x*CELL,food.y*CELL,CELL,CELL);
+  ctx.fillStyle="#22c55e"; snake.forEach(b=>ctx.fillRect(b.x*CELL,b.y*CELL,CELL,CELL));
+  drawBubble();
+}
+function reset(){
+  snake=[{x:10,y:10}]; dir="R"; len=1; over=false;
+  bubbleText=null; bubbleTTL=0; placeFood(); updateInfo(); draw();
+  if(loopId) clearInterval(loopId);
+  loopId=setInterval(step,200);
+}
+function step(){
+  if(over||!snake.length) return;
+  const [dx,dy]=VEC[dir];
+  const head={x:(snake[0].x+dx+GRID)%GRID,y:(snake[0].y+dy+GRID)%GRID};
+  if(snake.some(b=>b.x===head.x&&b.y===head.y)){
+    over=true; bubbleText="Crash! ↺"; bubbleTTL=9999; clearInterval(loopId); draw(); return;
+  }
   snake.unshift(head);
-  if(head.x===food.x&&head.y===food.y){len++;if(len>high){high=len;localStorage.setItem("snake_highscore",String(high));pushPraise(true);}else pushPraise(false);placeFood();}
-  else snake.pop();
-  draw();updateInfo();}
+  if(head.x===food.x && head.y===food.y){
+    len++;
+    if(len>high){ high=len; localStorage.setItem("snake_highscore",high); pushPraise(true); }
+    else pushPraise(false);
+    placeFood();
+  }else snake.pop();
+  if(bubbleTTL && !--bubbleTTL) bubbleText=null;
+  draw(); updateInfo();
+}
 
-/* ── USER CONTROL ── */
-window.addEventListener("keydown",e=>{if(DIRS[e.key]){const nd=DIRS[e.key];const opp={U:"D",D:"U",L:"R",R:"L"};if(nd!==opp[dir])dir=nd;}});
+/* ───────────────────────── 3. controls ───────────────────────── */
+window.addEventListener("keydown",e=>{
+  if(DIR_KEY[e.key]){
+    const nd=DIR_KEY[e.key], opp={U:"D",D:"U",L:"R",R:"L"};
+    if(nd!==opp[dir]) dir=nd;
+  }
+});
 
-/* ── CHAT UI ── */
-const chat=document.getElementById("chat");
-function pushMsg(role,text){const d=document.createElement("div");d.className=`msg ${role}`;d.textContent=text;chat.appendChild(d);chat.scrollTop=chat.scrollHeight;}
+/* ───────────────────────── 4. hidden log ───────────────────────── */
+function logAssistant(msg){ document.getElementById("chat").append(msg,"\n"); }
 
-/* ── LLM FEEDBACK ── */
-const SYS="You are a supportive, enthusiastic Snake-game coach. Keep messages under 20 words.";
-async function pushPraise(newRecord){const diff=high-len;const prompt={role:"user",content:JSON.stringify({length:len,high:high,diff,newRecord})};try{const rep=await engine.chat.completions.create({messages:[{role:"system",content:SYS},prompt]});pushMsg("assistant",rep.choices[0].message.content.trim());}catch(e){console.log(e);} }
+/* ───────────────────────── 5. LLM praise + TTS ───────────────────────── */
+const SYS="You are a supportive Snake coach. Reply in 20 words or fewer.";
+async function pushPraise(newRecord){
+  const diff=high-len;
+  const user={role:"user",content:JSON.stringify({length:len,high,diff,newRecord})};
+  try{
+    const rep=await engine.chat.completions.create({temperature:1.0,messages:[{role:"system",content:SYS},user]});
+    const msg=rep.choices[0].message.content.trim();
+    bubbleText=msg; bubbleTTL=40; logAssistant(msg); speak(msg);
+  }catch(e){console.log(e);}
+}
+function speak(text){
+  if(!("speechSynthesis" in window)) return;
+  speechSynthesis.cancel();
+  const utt=new SpeechSynthesisUtterance(text);
+  utt.rate=1.0; utt.pitch=1.1;
+  speechSynthesis.speak(utt);
+}
 
-/* ── BUTTONS ── */
-document.getElementById("dl").onclick=async()=>{await loadModel();reset();};
+/* ───────────────────────── 6. UI button ───────────────────────── */
+document.getElementById("dl").onclick=async()=>{await loadModel(); reset();};
 </script>
 </body>
 </html>
