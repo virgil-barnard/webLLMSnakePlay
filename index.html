@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LLM‑Snake • lean‑context version</title>
+  <style>
+    body,html{font-family:Arial,Helvetica,sans-serif;margin:0;padding:12px 20px;box-sizing:border-box;}
+    p{margin:8px 0;font-weight:600;}
+    select,button,input{font-size:14px;}
+    .download-container{display:flex;gap:8px;margin-bottom:16px;}
+    .chat-container{width:100%;max-width:760px;height:420px;border:2px solid #000;display:flex;flex-direction:column;margin-bottom:12px;}
+    .chat-box{flex:1 1;background:#c3c3c3;border:1px solid #ccc;padding:6px;overflow-y:auto;}
+    .chat-stats{background:#d3eceb;padding:6px;font-size:0.75rem;}
+    .message-container{display:flex;width:100%;}
+    .message{padding:8px 10px;margin:6px 0;border-radius:10px;max-width:75%;white-space:pre-wrap;word-break:break-word;}
+    .message-container.user{justify-content:end;}
+    .message-container.assistant{justify-content:start;}
+    .message-container.user .message{background:#007bff;color:#fff;}
+    .message-container.assistant .message{background:#f1f0f0;color:#333;}
+    .chat-input-container{display:flex;}
+    #user-input{flex:1 1;padding:8px;border:1px solid #ccc;}
+    button{padding:8px 12px;border:none;background:#007bff;color:#fff;cursor:pointer;}
+    button:hover:not(:disabled){background:#0056b3;}
+    button:disabled{background:#a0a0a0;cursor:not-allowed;}
+    #game{border:2px solid #000;background:#111;margin-bottom:12px;}
+    .hidden{display:none;}
+  </style>
+</head>
+<body>
+  <p>Step 1: Initialize WebLLM and Download Model</p>
+  <div class="download-container">
+    <select id="model-selection"></select>
+    <button id="download">Download</button>
+    <button id="start-game" disabled>Start Game</button>
+  </div>
+  <p id="download-status" class="hidden"></p>
+
+  <p>Step 2: Chat (game ↔︎ LLM)</p>
+  <div class="chat-container">
+    <div id="chat-box"  class="chat-box"></div>
+    <div id="chat-stats" class="chat-stats hidden"></div>
+    <div class="chat-input-container">
+      <input type="text" id="user-input" placeholder="Type a message…" />
+      <button id="send" disabled>Send</button>
+    </div>
+  </div>
+
+  <canvas id="game" width="400" height="400"></canvas>
+
+<script type="module">
+import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+
+/***************** Model download UI *****************/
+const models = webllm.prebuiltAppConfig.model_list.map(m=>m.model_id);
+let selected = models.includes("SmolLM2-360M-Instruct-q0f16-MLC") ? "SmolLM2-360M-Instruct-q0f16-MLC" : models[0];
+const selDom = document.getElementById("model-selection");
+models.forEach(id=>{ const o=document.createElement("option");o.value=id;o.textContent=id;selDom.appendChild(o);} );
+selDom.value=selected;
+const engine = new webllm.MLCEngine();
+engine.setInitProgressCallback(r=>{const d=document.getElementById("download-status");d.classList.remove("hidden");d.textContent=r.text;});
+async function initEngine(){selected=selDom.value;await engine.reload(selected,{temperature:0.2,top_p:1});}
+
+/***************** Snake game logic *****************/
+const CELL=20,GRID=20,ctx=document.getElementById("game").getContext("2d");
+const game={snake:[],dir:{x:0,y:-1},dirStr:"U",food:{x:0,y:0},over:false,
+  placeFood(){this.food={x:Math.random()*GRID|0,y:Math.random()*GRID|0};},
+  reset(){this.snake=[{x:10,y:10}];this.dir={x:0,y:-1};this.dirStr="U";this.placeFood();this.over=false;draw();},
+  setDir(code){const map={U:{x:0,y:-1},D:{x:0,y:1},L:{x:-1,y:0},R:{x:1,y:0}};if(map[code]){const nd=map[code];if(this.snake.length>1&&(nd.x===-this.dir.x&&nd.y===-this.dir.y))return;this.dir=nd;this.dirStr=code;}},
+  step(){if(this.over)return;const h={x:(this.snake[0].x+this.dir.x+GRID)%GRID,y:(this.snake[0].y+this.dir.y+GRID)%GRID};if(this.snake.some(s=>s.x===h.x&&s.y===h.y)){this.over=true;pushUI({role:"assistant",content:"💀 I crashed!"});draw();return;}this.snake.unshift(h);if(h.x===this.food.x&&h.y===this.food.y)this.placeFood();else this.snake.pop();draw();}}
+function draw(){ctx.fillStyle="#111";ctx.fillRect(0,0,400,400);ctx.fillStyle="#e11d48";ctx.fillRect(game.food.x*CELL,game.food.y*CELL,CELL,CELL);ctx.fillStyle="#22c55e";game.snake.forEach(s=>ctx.fillRect(s.x*CELL,s.y*CELL,CELL,CELL));}
+
+/***************** Prompt helpers ******************/
+function sensors(){return{h:game.snake[0],f:game.food,d:game.dirStr,l:game.snake.length};}
+const systemPrompt=`You control the snake. Reply **only** with JSON. Accepted dirs: U,D,L,R. Example:\n{"name":"control_move","parameters":{"dir":"L"}}`;
+
+function buildMessages(){return[
+  {role:"system",content:systemPrompt},
+  {role:"user",content:JSON.stringify({task:"move",sensors:sensors()})}
+];}
+
+/***************** UI rendering ********************/
+function pushUI(msg){appendDom(msg);}  // UI only, no accumulation
+function appendDom(m){const box=document.getElementById("chat-box");const c=document.createElement("div");c.className=`message-container ${m.role}`;const d=document.createElement("div");d.className="message";d.textContent=m.content;c.appendChild(d);box.appendChild(c);box.scrollTop=box.scrollHeight;}
+function updateLast(txt){const msgs=document.querySelectorAll(".message");msgs[msgs.length-1].textContent=txt;}
+
+/***************** AI turn (stateless) *************/
+async function aiTurn(){ if(game.over) return; pushUI({role:"user",content:JSON.stringify({task:"move",sensors:sensors()})}); pushUI({role:"assistant",content:"…"});
+  try{
+    let cur=""; const completion=await engine.chat.completions.create({stream:true,messages:buildMessages()});
+    for await(const ch of completion){const d=ch.choices[0].delta.content;if(d){cur+=d;updateLast(cur);} }
+    const final=await engine.getMessage(); updateLast(final);
+    applyMove(final);
+  }catch(e){updateLast(`[err]`); console.error(e); randomMove();}
+  game.step(); if(!game.over) setTimeout(aiTurn,800);
+}
+function applyMove(txt){ try{const m=txt.match(/\{[\s\S]*\}/); if(!m) throw"noJSON"; const obj=JSON.parse(m[0]); game.setDir(obj.parameters.dir);}catch{randomMove();} }
+function randomMove(){game.setDir(["U","D","L","R"][Math.random()*4|0]);}
+
+/***************** Manual chat (for dev) ***********/
+async function manualSend(){ const val=document.getElementById("user-input").value.trim(); if(!val) return; pushUI({role:"user",content:val}); document.getElementById("user-input").value=""; pushUI({role:"assistant",content:"…"});
+  try{const r=await engine.chat.completions.create({messages:[{role:"system",content:"You are chat assistant"},{role:"user",content:val}]}); updateLast(r.choices[0].message.content.trim());}catch(e){updateLast(`[err ${e.message}]`);} }
+
+/***************** Bind buttons *******************/
+const dlBtn=document.getElementById("download"), startBtn=document.getElementById("start-game"), sendBtn=document.getElementById("send");
+dlBtn.onclick=async()=>{dlBtn.disabled=true;await initEngine();startBtn.disabled=false;sendBtn.disabled=false;};
+startBtn.onclick=()=>{game.reset();aiTurn();};
+sendBtn.onclick=manualSend;
+window.addEventListener("keydown",e=>{if(e.key==="Enter"&&document.activeElement.id==="user-input")manualSend();});
+</script>
+</body>
+</html>
