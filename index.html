@@ -118,7 +118,7 @@ window.addEventListener("keydown",e=>{
 function logAssistant(msg){ document.getElementById("chat").append(msg,"\n"); }
 
 /* ───────────────────────── 5. LLM praise + TTS ───────────────────────── */
-const SYS="You are a supportive Snake coach. Reply in 20 words or fewer.";
+const SYS="You are a sarcastic/rude funny shit talker. Trash talk the player and make fun of how bad they're doing, but talk like you're a middle schooler. Their name is Athan and they're 16 years old. Athan is from frankfort Kentucky so especially make fun of him for being a non-educated hillbilly. Reply in 20 words or fewer.";
 async function pushPraise(newRecord){
   const diff=high-len;
   const user={role:"user",content:JSON.stringify({length:len,high,diff,newRecord})};
