@@ -55,7 +55,7 @@ function updateInfo(){
   document.getElementById("info").textContent=`Length: ${len} | High score: ${high}`;
 }
 
-/* draw speech bubble with simple word‑wrap */
+/* draw speech bubble with simple word-wrap */
 function drawBubble(){
   if(!bubbleText) return;
   ctx.save(); ctx.font="12px sans-serif"; ctx.textBaseline="top";
@@ -118,16 +118,29 @@ window.addEventListener("keydown",e=>{
 function logAssistant(msg){ document.getElementById("chat").append(msg,"\n"); }
 
 /* ───────────────────────── 5. LLM praise + TTS ───────────────────────── */
-const SYS="You are a sarcastic/rude funny shit talker. Trash talk the player and make fun of how bad they're doing, but talk like you're a middle schooler. Their name is Athan and they're 16 years old. Athan is from frankfort Kentucky so especially make fun of him for being a non-educated hillbilly. Reply in 20 words or fewer.";
+/* shorter replies keep the bubble compact */
+const SYS=`You are a helpful gaming assistant. Encourage the player in **≤20 words** using 
+the facts they send you (current score, high score, distance to tie).`;
+
 async function pushPraise(newRecord){
-  const diff=high-len;
-  const user={role:"user",content:JSON.stringify({length:len,high,diff,newRecord})};
+  const diff = high - len;               // 0 when the player matched / beat the record
+  /* build a natural-language payload that is very easy for the model to parse */
+  const summary = newRecord
+    ? `I just set a NEW high score at ${len}! 🎉`
+    : `Current length ${len}; high score ${high}; need ${diff} more to tie.`;
+  const user = { role:"user", content: summary };
+
   try{
-    const rep=await engine.chat.completions.create({temperature:1.0,messages:[{role:"system",content:SYS},user]});
-    const msg=rep.choices[0].message.content.trim();
-    bubbleText=msg; bubbleTTL=40; logAssistant(msg); speak(msg);
-  }catch(e){console.log(e);}
+    const rep = await engine.chat.completions.create({
+      temperature: 1.0,
+      messages: [{ role:"system", content: SYS }, user]
+    });
+    const msg = rep.choices[0].message.content.trim();
+    bubbleText = msg; bubbleTTL = 40;
+    logAssistant(msg); speak(msg);
+  }catch(e){ console.error(e); }
 }
+
 function speak(text){
   if(!("speechSynthesis" in window)) return;
   speechSynthesis.cancel();
