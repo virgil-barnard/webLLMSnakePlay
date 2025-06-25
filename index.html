@@ -74,17 +74,35 @@ function draw(){
 const SYS=`You are an AI snake-pilot.  
 Rules:
 • Board is 20×20 torus (wraps on all edges). 
-• Board state is represented by coordinates (x,y) meaning the food/head/body is in column x, row y in matrix notation.  
-• Snake may move 1-10 cells straight.  
+• Board state is described with **matrix indices** "(row,col)"  
+  – "row" 0-19 goes **down** the screen  
+  – "col" 0-19 goes **right** across the screen  • Snake may move 1-10 cells straight.  
 • Hitting its own body will cause game over.  
 Objective: choose a straight move that brings the head to the food safely (or gets closer if blocked).  
 Respond **with JSON only** on one line, no prose:  
 {"direction":"U|D|L|R","steps":<1-10>}`; // ★
 
-function describeBoard(){
-  const head=snake[0];
-  const body=snake.slice(1).map(b=>`(${b.x},${b.y})`).join(",")||"none";
-  return `Food at (${food.x},${food.y}). Head at (${head.x},${head.y}). Body at: ${body}. `;
+function torusDelta(a,b){          // shortest signed distance on a ring  /* ★ */
+  let d = (b - a + GRID) % GRID;
+  if (d > GRID/2) d -= GRID;       // pick shorter wrap direction
+  return d;                        // could be negative
+}
+
+function describeBoard(){                                      /* ★ */
+  const head = snake[0];
+  const bodyStr = snake
+        .slice(1)
+        .map(b => `(${b.y},${b.x})`)
+        .join(",") || "none";
+
+  const dRow = torusDelta(head.y, food.y);  // + ⇒ food below
+  const dCol = torusDelta(head.x, food.x);  // + ⇒ food right
+  const manhattan = Math.abs(dRow) + Math.abs(dCol);
+
+  return `Food at (${food.y},${food.x}). `
+       +`Head at (${head.y},${head.x}). `
+       +`dRow ${dRow}, dCol ${dCol}, manhattan ${manhattan}. `
+       +`Body at: ${bodyStr}.`;
 }
 
 async function askAI(){
@@ -94,7 +112,7 @@ async function askAI(){
 
   try{
     const rep=await engine.chat.completions.create({
-      temperature:0.2,
+      temperature:0.5,
       messages:[
         {role:"system",content:SYS},
         {role:"user",content:userMsg}
