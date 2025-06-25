@@ -3,20 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Snake + LLM Cheerleader with TTS</title>
+  <title>Snake - LLM Autopilot</title>
   <style>
     body,html{font-family:Arial,Helvetica,sans-serif;margin:0;padding:12px 20px;box-sizing:border-box;}
     .download-container{display:flex;gap:8px;margin-bottom:14px;}
     select,button{font-size:14px;}
     #game{background:#111;border:2px solid #000;display:block;margin:auto;}
-    /* hidden scrolling log – toggle display for debugging */
-    #chat{display:none;}
+    #chat{white-space:pre-wrap;border:1px solid #ccc;padding:8px;height:170px;overflow:auto;margin-top:12px;}/* visible log */
   </style>
 </head>
 <body>
   <div class="download-container">
     <select id="model"></select>
-    <button id="dl">Download model</button>
+    <button id="dl">Download model & start</button>
     <span id="status"></span>
   </div>
 
@@ -35,17 +34,24 @@ webllm.prebuiltAppConfig.model_list.forEach(m=>{
 });
 const engine=new webllm.MLCEngine();
 engine.setInitProgressCallback(r=>document.getElementById("status").textContent=r.text);
-async function loadModel(){await engine.reload(sel.value,{temperature:0.5});}
+async function loadModel(){await engine.reload(sel.value,{temperature:0.2});}
 
 /* ───────────────────────── 2. game setup ───────────────────────── */
 const CELL=20,GRID=20;
 const ctx=document.getElementById("game").getContext("2d");
-const DIR_KEY={ArrowUp:"U",ArrowDown:"D",ArrowLeft:"L",ArrowRight:"R"};
 const VEC={U:[0,-1],D:[0,1],L:[-1,0],R:[1,0]};
-
-let snake=[],dir="R",food={x:0,y:0},loopId=null,over=false;
+let snake=[],dir="R",food={x:0,y:0},timer=null,over=false;
 let len=1,high=Number(localStorage.getItem("snake_highscore"))||1;
-let bubbleText=null,bubbleTTL=0;
+
+/* AI-control state */                         // ───── NEW
+let stepsLeft=0, waiting=false;
+
+/* logging helpers */
+const chatBox=document.getElementById("chat");
+function log(role,msg){
+  chatBox.append(`${role}: ${msg}\n`);
+  chatBox.scrollTop=chatBox.scrollHeight;
+}
 
 function placeFood(){
   do{ food={x:Math.random()*GRID|0,y:Math.random()*GRID|0}; }
@@ -54,90 +60,118 @@ function placeFood(){
 function updateInfo(){
   document.getElementById("info").textContent=`Length: ${len} | High score: ${high}`;
 }
-
-/* draw speech bubble with simple word‑wrap */
-function drawBubble(){
-  if(!bubbleText) return;
-  ctx.save(); ctx.font="12px sans-serif"; ctx.textBaseline="top";
-  const pad=4,maxW=160,lineH=16;
-  const words=bubbleText.split(/\s+/), lines=[]; let cur="";
-  words.forEach(w=>{const test=cur?cur+" "+w:w;
-    if(ctx.measureText(test).width>maxW){lines.push(cur);cur=w;}
-    else cur=test;});
-  if(cur) lines.push(cur);
-  const boxW=Math.max(...lines.map(l=>ctx.measureText(l).width))+pad*2;
-  const boxH=lines.length*lineH+pad*2;
-  let bx=snake[0].x*CELL-boxW/2, by=snake[0].y*CELL-boxH-6;
-  if(bx<2)bx=2; if(bx+boxW>398)bx=398-boxW;
-  if(by<2)by=2;
-  ctx.fillStyle="#fff"; ctx.fillRect(bx,by,boxW,boxH);
-  ctx.strokeStyle="#333"; ctx.strokeRect(bx,by,boxW,boxH);
-  ctx.fillStyle="#000";
-  lines.forEach((l,i)=>ctx.fillText(l,bx+pad,by+pad+i*lineH));
-  ctx.restore();
-}
 function draw(){
   ctx.fillStyle="#111"; ctx.fillRect(0,0,400,400);
-  ctx.fillStyle="#e11d48"; ctx.fillRect(food.x*CELL,food.y*CELL,CELL,CELL);
-  ctx.fillStyle="#22c55e"; snake.forEach(b=>ctx.fillRect(b.x*CELL,b.y*CELL,CELL,CELL));
-  drawBubble();
+  /* food */
+  ctx.fillStyle="#e11d48";
+  ctx.fillRect(food.x*CELL,food.y*CELL,CELL,CELL);
+  /* snake */
+  ctx.fillStyle="#22c55e";
+  snake.forEach(b=>ctx.fillRect(b.x*CELL,b.y*CELL,CELL,CELL));
 }
-function reset(){
-  snake=[{x:10,y:10}]; dir="R"; len=1; over=false;
-  bubbleText=null; bubbleTTL=0; placeFood(); updateInfo(); draw();
-  if(loopId) clearInterval(loopId);
-  loopId=setInterval(step,200);
+
+/* ──────────────────────── 3. AI prompt helpers ──────────────────────── */ // NEW
+const SYS=`You are an AI snake-pilot.  
+Rules:
+• Board is 20×20 torus (wraps on all edges). 
+• Board state is represented by coordinates (x,y) meaning the food/head/body is in column x, row y in matrix notation.  
+• Snake may move 1-10 cells straight.  
+• Hitting its own body will cause game over.  
+Objective: choose a straight move that brings the head to the food safely (or gets closer if blocked).  
+Respond **with JSON only** on one line, no prose:  
+{"direction":"U|D|L|R","steps":<1-10>}`; // ★
+
+function describeBoard(){
+  const head=snake[0];
+  const body=snake.slice(1).map(b=>`(${b.x},${b.y})`).join(",")||"none";
+  return `Food at (${food.x},${food.y}). Head at (${head.x},${head.y}). Body at: ${body}. `;
 }
+
+async function askAI(){
+  waiting=true;
+  const userMsg=describeBoard();
+  log("Game",userMsg);
+
+  try{
+    const rep=await engine.chat.completions.create({
+      temperature:0.2,
+      messages:[
+        {role:"system",content:SYS},
+        {role:"user",content:userMsg}
+      ]
+    });
+    const txt=rep.choices[0].message.content.trim();
+    log("LLM",txt);
+
+    const cmd=JSON.parse(txt);
+    if(!("direction" in cmd)&&!("steps" in cmd)) throw new Error("Bad keys");
+    if(!VEC[cmd.direction]) throw new Error("Bad dir");
+    if(cmd.steps<1||cmd.steps>10) throw new Error("Bad steps");
+    dir=cmd.direction;
+    stepsLeft=cmd.steps;
+  }catch(e){
+    log("Game","Parsing error – using random safe move.");
+    safeFallback();           // fallback to prevent stalling
+  }finally{
+    waiting=false;
+  }
+}
+
+/* simple fallback: pick any non-reverse dir with steps=1 */
+function safeFallback(){
+  const dirs=Object.keys(VEC).filter(d=>{
+    const [dx,dy]=VEC[d];
+    const nx=(snake[0].x+dx+GRID)%GRID,
+          ny=(snake[0].y+dy+GRID)%GRID;
+    return !snake.some(b=>b.x===nx&&b.y===ny);
+  });
+  dir=dirs[0]||"R"; stepsLeft=1;
+}
+
+/* ──────────────────────── 4. game loop ──────────────────────── */
 function step(){
-  if(over||!snake.length) return;
+  if(over||waiting) return;
+  if(stepsLeft===0){ askAI(); return; }
+
   const [dx,dy]=VEC[dir];
   const head={x:(snake[0].x+dx+GRID)%GRID,y:(snake[0].y+dy+GRID)%GRID};
+
+  /* collision with self = game over */
   if(snake.some(b=>b.x===head.x&&b.y===head.y)){
-    over=true; bubbleText="Crash! ↺"; bubbleTTL=9999; clearInterval(loopId); draw(); return;
+    over=true; clearInterval(timer);
+    log("Game","💀 Crashed – refresh to restart.");
+    return;
   }
   snake.unshift(head);
-  if(head.x===food.x && head.y===food.y){
+
+  if(head.x===food.x&&head.y===food.y){
     len++;
-    if(len>high){ high=len; localStorage.setItem("snake_highscore",high); pushPraise(true); }
-    else pushPraise(false);
+    if(len>high){high=len;localStorage.setItem("snake_highscore",high);}
     placeFood();
-  }else snake.pop();
-  if(bubbleTTL && !--bubbleTTL) bubbleText=null;
+    /* when food eaten we immediately re-ask AI regardless of remaining steps */
+    stepsLeft=0;
+  }else{
+    snake.pop();
+    stepsLeft--;
+  }
+
   draw(); updateInfo();
 }
 
-/* ───────────────────────── 3. controls ───────────────────────── */
-window.addEventListener("keydown",e=>{
-  if(DIR_KEY[e.key]){
-    const nd=DIR_KEY[e.key], opp={U:"D",D:"U",L:"R",R:"L"};
-    if(nd!==opp[dir]) dir=nd;
-  }
-});
-
-/* ───────────────────────── 4. hidden log ───────────────────────── */
-function logAssistant(msg){ document.getElementById("chat").append(msg,"\n"); }
-
-/* ───────────────────────── 5. LLM praise + TTS ───────────────────────── */
-const SYS="You are a sarcastic/rude funny shit talker. Trash talk the player and make fun of how bad they're doing, but talk like you're a middle schooler. Their name is Athan and they're 16 years old. Athan is from frankfort Kentucky so especially make fun of him for being a non-educated hillbilly. Reply in 20 words or fewer.";
-async function pushPraise(newRecord){
-  const diff=high-len;
-  const user={role:"user",content:JSON.stringify({length:len,high,diff,newRecord})};
-  try{
-    const rep=await engine.chat.completions.create({temperature:1.0,messages:[{role:"system",content:SYS},user]});
-    const msg=rep.choices[0].message.content.trim();
-    bubbleText=msg; bubbleTTL=40; logAssistant(msg); speak(msg);
-  }catch(e){console.log(e);}
-}
-function speak(text){
-  if(!("speechSynthesis" in window)) return;
-  speechSynthesis.cancel();
-  const utt=new SpeechSynthesisUtterance(text);
-  utt.rate=1.0; utt.pitch=1.1;
-  speechSynthesis.speak(utt);
+/* ──────────────────────── 5. bootstrap ──────────────────────── */
+function reset(){
+  snake=[{x:10,y:10}]; dir="R"; len=1; over=false;
+  placeFood(); updateInfo(); draw();
+  chatBox.textContent="";                             // clear old log
+  stepsLeft=0; waiting=false;                         // NEW
+  if(timer) clearInterval(timer);
+  timer=setInterval(step,200);
 }
 
-/* ───────────────────────── 6. UI button ───────────────────────── */
-document.getElementById("dl").onclick=async()=>{await loadModel(); reset();};
+document.getElementById("dl").onclick=async()=>{
+  await loadModel();
+  reset();
+};
 </script>
 </body>
 </html>
